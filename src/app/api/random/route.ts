@@ -8,7 +8,8 @@ export const runtime = 'nodejs';
 export async function GET() {
   await ensureSchema();
 
-  const pickerId = cookies().get('mp_client_id')?.value || null;
+  const cookieStore = await cookies();
+  const pickerId = cookieStore.get('mp_client_id')?.value ?? null;
 
   const { rows } = await sql<{ id: string; content: string; created_at: string; sender_id: string | null }>`
     SELECT id, content, created_at, sender_id

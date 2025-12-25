@@ -8,7 +8,9 @@ export const runtime = 'nodejs';
 export async function GET() {
   await ensureSchema();
 
-  const clientId = cookies().get('mp_client_id')?.value || '';
+  const cookieStore = await cookies();
+  const clientId = cookieStore.get('mp_client_id')?.value ?? '';
+
   if (!clientId) {
     return NextResponse.json({ notifications: [] });
   }
@@ -28,12 +30,11 @@ export async function GET() {
     LIMIT 20
   `;
 
-  if (rows.length) {
-    const ids = rows.map((r) => r.id);
+  for (const r of rows) {
     await sql`
       UPDATE notifications
       SET read_at = NOW()
-      WHERE id = ANY(${ids}::bigint[])
+      WHERE id = ${r.id}::bigint
     `;
   }
 

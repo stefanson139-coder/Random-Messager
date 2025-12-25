@@ -18,7 +18,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Content is too long (max 2000 chars).' }, { status: 413 });
   }
 
-  const senderId = cookies().get('mp_client_id')?.value || null;
+  const cookieStore = await cookies();
+  const senderId = cookieStore.get('mp_client_id')?.value ?? null;
 
   const { rows } = await sql<{ id: string; created_at: string }>`
     INSERT INTO messages (content, sender_id)
