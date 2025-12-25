@@ -1,12 +1,56 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 type RandomMessage = {
   id: string;
   content: string;
   createdAt: string;
 };
+
+type NotificationItem = {
+  id: string;
+  messageId: string;
+  content: string;
+  createdAt: string;
+};
+
+type ToastItem = {
+  id: string;
+  text: string;
+};
+
+function getCookie(name: string) {
+  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+  return match ? decodeURIComponent(match[2]) : '';
+}
+
+function setCookie(name: string, value: string, days = 3650) {
+  const expires = new Date(Date.now() + days * 864e5).toUTCString();
+  document.cookie = `${name}=${encodeURIComponent(value)}; Expires=${expires}; Path=/; SameSite=Lax`;
+}
+
+function getOrCreateClientId() {
+  const key = 'mp_client_id';
+  const existingLocal = typeof window !== 'undefined' ? localStorage.getItem(key) : null;
+  const existingCookie = typeof document !== 'undefined' ? getCookie(key) : '';
+  const existing = existingLocal || existingCookie;
+
+  if (existing) {
+    if (!existingCookie) setCookie(key, existing);
+    if (!existingLocal) localStorage.setItem(key, existing);
+    return existing;
+  }
+
+  const id =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+
+  localStorage.setItem(key, id);
+  setCookie(key, id);
+  return id;
+}
 
 export default function Page() {
   const [content, setContent] = useState('');
@@ -15,17 +59,59 @@ export default function Page() {
   const [loadingRandom, setLoadingRandom] = useState(false);
   const [randomMsg, setRandomMsg] = useState<RandomMessage | null>(null);
 
-  const [toast, setToast] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const toastTimers = useRef<Map<string, any>>(new Map());
 
-  const canSubmit = useMemo(
-    () => content.trim().length > 0 && content.trim().length <= 2000,
-    [content]
-  );
+  const canSubmit = useMemo(() => content.trim().length > 0 && content.trim().length <= 2000, [content]);
+
+  function pushToast(text: string) {
+    const id = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+    setToasts((prev) => [...prev, { id, text }]);
+
+    const t = setTimeout(() => {
+      setToasts((prev) => prev.filter((x) => x.id !== id));
+      toastTimers.current.delete(id);
+    }, 5000);
+
+    toastTimers.current.set(id, t);
+  }
+
+  useEffect(() => {
+    getOrCreateClientId();
+    return () => {
+      toastTimers.current.forEach((t) => clearTimeout(t));
+      toastTimers.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function poll() {
+      try {
+        const res = await fetch('/api/notifications', { method: 'GET', cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        const list: NotificationItem[] = Array.isArray(data?.notifications) ? data.notifications : [];
+        if (!alive) return;
+
+        for (const n of list) {
+          const preview = n.content.length > 80 ? n.content.slice(0, 80) + '…' : n.content;
+          pushToast(`Your message was drawn: “${preview}”`);
+        }
+      } catch {}
+    }
+
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
 
   async function submit() {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
-    setToast(null);
 
     try {
       const res = await fetch('/api/messages', {
@@ -35,12 +121,12 @@ export default function Page() {
       });
 
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || '提交失敗');
+      if (!res.ok) throw new Error(data?.error || 'Submit failed.');
 
       setContent('');
-      setToast('已投入訊息池 ✅');
+      pushToast('Submitted to the pool ✅');
     } catch (e: any) {
-      setToast(e?.message || '提交失敗');
+      pushToast(e?.message || 'Submit failed.');
     } finally {
       setSubmitting(false);
     }
@@ -49,116 +135,184 @@ export default function Page() {
   async function pickRandom() {
     if (loadingRandom) return;
     setLoadingRandom(true);
-    setToast(null);
 
     try {
-      const res = await fetch('/api/random', { method: 'GET' });
+      const res = await fetch('/api/random', { method: 'GET', cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || '抽取失敗');
+      if (!res.ok) throw new Error(data?.error || 'Draw failed.');
 
       setRandomMsg(data.message);
     } catch (e: any) {
       setRandomMsg(null);
-      setToast(e?.message || '抽取失敗');
+      pushToast(e?.message || 'Draw failed.');
     } finally {
       setLoadingRandom(false);
     }
   }
 
   return (
-    <main style={{ maxWidth: 900, margin: '0 auto', padding: 24, fontFamily: 'ui-sans-serif, system-ui' }}>
-      <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 6 }}>訊息池</h1>
-      <p style={{ marginTop: 0, opacity: 0.75, marginBottom: 18 }}>
-        任何人都可以投入訊息；也可以隨機抽一則看看。
-      </p>
+    <main
+      style={{
+        minHeight: '100vh',
+        background: 'linear-gradient(180deg, #eaf5ff 0%, #f7fbff 55%, #ffffff 100%)',
+        padding: 24,
+        fontFamily: 'ui-sans-serif, system-ui',
+      }}
+    >
+      <div
+        style={{
+          position: 'fixed',
+          top: 16,
+          right: 16,
+          display: 'grid',
+          gap: 10,
+          zIndex: 50,
+          width: 360,
+          maxWidth: 'calc(100vw - 32px)',
+        }}
+      >
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            style={{
+              padding: 12,
+              borderRadius: 12,
+              border: '1px solid rgba(30, 64, 175, 0.18)',
+              background: 'rgba(239, 246, 255, 0.95)',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.08)',
+              color: '#0f172a',
+              fontSize: 14,
+              lineHeight: 1.35,
+            }}
+          >
+            {t.text}
+          </div>
+        ))}
+      </div>
 
-      <section style={{ display: 'grid', gap: 12, padding: 16, border: '1px solid #e5e7eb', borderRadius: 12 }}>
-        <div style={{ fontWeight: 700 }}>投入一則訊息</div>
-        <textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          placeholder="輸入任何訊息（最多 2000 字）"
-          rows={5}
+      <div style={{ maxWidth: 900, margin: '0 auto' }}>
+        <h1 style={{ fontSize: 30, fontWeight: 850, marginBottom: 6, color: '#0b2a4a' }}>Message Pool</h1>
+        <p style={{ marginTop: 0, opacity: 0.8, marginBottom: 18, color: '#0b2a4a' }}>
+          Anyone can submit a message. Anyone can draw one at random.
+        </p>
+
+        <section
           style={{
-            width: '100%',
-            padding: 12,
-            borderRadius: 10,
-            border: '1px solid #d1d5db',
-            resize: 'vertical',
-            fontSize: 14,
+            display: 'grid',
+            gap: 12,
+            padding: 16,
+            border: '1px solid rgba(30, 64, 175, 0.18)',
+            borderRadius: 14,
+            background: 'rgba(255,255,255,0.82)',
+            backdropFilter: 'blur(6px)',
           }}
-        />
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <button
-            onClick={submit}
-            disabled={!canSubmit || submitting}
+        >
+          <div style={{ fontWeight: 750, color: '#0b2a4a' }}>Submit a message</div>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="Type anything (max 2000 characters)"
+            rows={5}
             style={{
-              padding: '10px 14px',
-              borderRadius: 10,
-              border: '1px solid #111827',
-              background: '#111827',
-              color: 'white',
-              cursor: !canSubmit || submitting ? 'not-allowed' : 'pointer',
-              opacity: !canSubmit || submitting ? 0.6 : 1,
-              fontWeight: 700,
+              width: '100%',
+              padding: 12,
+              borderRadius: 12,
+              border: '1px solid rgba(30, 64, 175, 0.25)',
+              resize: 'vertical',
+              fontSize: 14,
+              outline: 'none',
             }}
-          >
-            {submitting ? '提交中…' : '投入訊息池'}
-          </button>
+          />
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button
+              onClick={submit}
+              disabled={!canSubmit || submitting}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 12,
+                border: '1px solid rgba(30, 64, 175, 0.35)',
+                background: 'linear-gradient(180deg, #3b82f6 0%, #2563eb 100%)',
+                color: 'white',
+                cursor: !canSubmit || submitting ? 'not-allowed' : 'pointer',
+                opacity: !canSubmit || submitting ? 0.6 : 1,
+                fontWeight: 750,
+              }}
+            >
+              {submitting ? 'Submitting…' : 'Submit'}
+            </button>
 
-          <span style={{ fontSize: 12, opacity: 0.7 }}>
-            {content.trim().length}/2000
-          </span>
-        </div>
-      </section>
+            <span style={{ fontSize: 12, opacity: 0.75, color: '#0b2a4a' }}>{content.trim().length}/2000</span>
+          </div>
+        </section>
 
-      <div style={{ height: 18 }} />
+        <div style={{ height: 18 }} />
 
-      <section style={{ display: 'grid', gap: 12, padding: 16, border: '1px solid #e5e7eb', borderRadius: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-          <div style={{ fontWeight: 700 }}>隨機觀看一則</div>
-          <button
-            onClick={pickRandom}
-            disabled={loadingRandom}
-            style={{
-              padding: '10px 14px',
-              borderRadius: 10,
-              border: '1px solid #d1d5db',
-              background: 'white',
-              cursor: loadingRandom ? 'not-allowed' : 'pointer',
-              opacity: loadingRandom ? 0.6 : 1,
-              fontWeight: 700,
-            }}
-          >
-            {loadingRandom ? '抽取中…' : '抽一則'}
-          </button>
-        </div>
+        <section
+          style={{
+            display: 'grid',
+            gap: 12,
+            padding: 16,
+            border: '1px solid rgba(30, 64, 175, 0.18)',
+            borderRadius: 14,
+            background: 'rgba(255,255,255,0.82)',
+            backdropFilter: 'blur(6px)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontWeight: 750, color: '#0b2a4a' }}>Draw a random message</div>
+            <button
+              onClick={pickRandom}
+              disabled={loadingRandom}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 12,
+                border: '1px solid rgba(30, 64, 175, 0.25)',
+                background: 'white',
+                cursor: loadingRandom ? 'not-allowed' : 'pointer',
+                opacity: loadingRandom ? 0.6 : 1,
+                fontWeight: 750,
+                color: '#0b2a4a',
+              }}
+            >
+              {loadingRandom ? 'Drawing…' : 'Draw'}
+            </button>
+          </div>
 
-        {randomMsg ? (
-          <div style={{ padding: 14, borderRadius: 10, border: '1px solid #d1d5db', background: '#fafafa' }}>
-            <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 8 }}>
-              #{randomMsg.id} · {new Date(randomMsg.createdAt).toLocaleString()}
+          {randomMsg ? (
+            <div
+              style={{
+                padding: 14,
+                borderRadius: 12,
+                border: '1px solid rgba(30, 64, 175, 0.18)',
+                background: 'rgba(239, 246, 255, 0.65)',
+              }}
+            >
+              <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8, color: '#0b2a4a' }}>
+                #{randomMsg.id} · {new Date(randomMsg.createdAt).toLocaleString()}
+              </div>
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 14, color: '#0b2a4a' }}>
+                {randomMsg.content}
+              </pre>
             </div>
-            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 14 }}>
-              {randomMsg.content}
-            </pre>
-          </div>
-        ) : (
-          <div style={{ padding: 14, borderRadius: 10, border: '1px dashed #d1d5db', opacity: 0.75 }}>
-            尚未抽取任何訊息
-          </div>
-        )}
-      </section>
+          ) : (
+            <div
+              style={{
+                padding: 14,
+                borderRadius: 12,
+                border: '1px dashed rgba(30, 64, 175, 0.25)',
+                opacity: 0.8,
+                color: '#0b2a4a',
+              }}
+            >
+              No message drawn yet.
+            </div>
+          )}
+        </section>
 
-      {toast && (
-        <div style={{ marginTop: 16, padding: 12, borderRadius: 10, border: '1px solid #d1d5db' }}>
-          {toast}
-        </div>
-      )}
-
-      <footer style={{ marginTop: 22, fontSize: 12, opacity: 0.65 }}>
-        若你打算公開給所有人使用，建議加入防濫用（rate limit）、敏感內容過濾與回報機制。
-      </footer>
+        <footer style={{ marginTop: 22, fontSize: 12, opacity: 0.72, color: '#0b2a4a' }}>
+          Tip: For a public site, consider adding rate limiting and abuse prevention.
+        </footer>
+      </div>
     </main>
   );
 }

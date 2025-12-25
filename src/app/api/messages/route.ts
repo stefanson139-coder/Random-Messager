@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { ensureSchema } from '@/lib/db';
+import { cookies } from 'next/headers';
 
 export const runtime = 'nodejs';
 
@@ -11,15 +12,17 @@ export async function POST(req: Request) {
   const content = typeof body?.content === 'string' ? body.content.trim() : '';
 
   if (!content) {
-    return NextResponse.json({ error: '內容不能為空' }, { status: 400 });
+    return NextResponse.json({ error: 'Content cannot be empty.' }, { status: 400 });
   }
   if (content.length > 2000) {
-    return NextResponse.json({ error: '內容太長（最多 2000 字）' }, { status: 413 });
+    return NextResponse.json({ error: 'Content is too long (max 2000 chars).' }, { status: 413 });
   }
 
+  const senderId = cookies().get('mp_client_id')?.value || null;
+
   const { rows } = await sql<{ id: string; created_at: string }>`
-    INSERT INTO messages (content)
-    VALUES (${content})
+    INSERT INTO messages (content, sender_id)
+    VALUES (${content}, ${senderId})
     RETURNING id, created_at
   `;
 
